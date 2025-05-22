@@ -8,6 +8,8 @@ import hydra
 from hydra import initialize_config_module, compose
 from pathlib import Path
 from pytorch3d.transforms import quaternion_to_matrix
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation, FFMpegWriter
 
 from hmr4d.configs import register_store_gvhmr
 from hmr4d.utils.video_io_utils import (
@@ -251,56 +253,90 @@ def render_global(cfg):
     debug_cam = False
     pred = torch.load(cfg.paths.hmr4d_results)
     smplx = make_smplx("supermotion").cuda()
+    smpl = make_smplx("supermotion_smpl24").cuda()
     smplx2smpl = torch.load("hmr4d/utils/body_model/smplx2smpl_sparse.pt").cuda()
     faces_smpl = make_smplx("smpl").faces
     J_regressor = torch.load("hmr4d/utils/body_model/smpl_neutral_J_regressor.pt").cuda()
 
     # smpl
     smplx_out = smplx(**to_cuda(pred["smpl_params_global"]))
-    pred_ay_verts = torch.stack([torch.matmul(smplx2smpl, v_) for v_ in smplx_out.vertices])
+    smpl_out = smpl(**to_cuda(pred["smpl_params_global"]))
+    smpl_out[:, :, [1, 2]] = smpl_out[:, :, [2, 1]]
+    smpl_out_numpy = smpl_out.cpu().numpy()
+    np.save('/home/fftai/RL/GVHMR/outputs/demo/result/3d_trajectory.npy', smpl_out_numpy)
+    
+    # pred_ay_verts = torch.stack([torch.matmul(smplx2smpl, v_) for v_ in smplx_out.vertices])
+    
 
-    def move_to_start_point_face_z(verts):
-        "XZ to origin, Start from the ground, Face-Z"
-        # position
-        verts = verts.clone()  # (L, V, 3)
-        offset = einsum(J_regressor, verts[0], "j v, v i -> j i")[0]  # (3)
-        offset[1] = verts[:, :, [1]].min()
-        verts = verts - offset
-        # face direction
-        T_ay2ayfz = compute_T_ayfz2ay(einsum(J_regressor, verts[[0]], "j v, l v i -> l j i"), inverse=True)
-        verts = apply_T_on_points(verts, T_ay2ayfz)
-        return verts
+    # def move_to_start_point_face_z(verts):
+    #     "XZ to origin, Start from the ground, Face-Z"
+    #     # position
+    #     verts = verts.clone()  # (L, V, 3)
+    #     offset = einsum(J_regressor, verts[0], "j v, v i -> j i")[0]  # (3)
+    #     offset[1] = verts[:, :, [1]].min()
+    #     verts = verts - offset
+    #     # face direction
+    #     T_ay2ayfz = compute_T_ayfz2ay(einsum(J_regressor, verts[[0]], "j v, l v i -> l j i"), inverse=True)
+    #     verts = apply_T_on_points(verts, T_ay2ayfz)
+    #     return verts
 
-    verts_glob = move_to_start_point_face_z(pred_ay_verts)
-    joints_glob = einsum(J_regressor, verts_glob, "j v, l v i -> l j i")  # (L, J, 3)
-    global_R, global_T, global_lights = get_global_cameras_static(
-        verts_glob.cpu(),
-        beta=2.0,
-        cam_height_degree=20,
-        target_center_height=1.0,
-    )
+    # verts_glob = move_to_start_point_face_z(pred_ay_verts)
+    # joints_glob = einsum(J_regressor, verts_glob, "j v, l v i -> l j i")  # (L, J, 3)
+    # global_R, global_T, global_lights = get_global_cameras_static(
+    #     verts_glob.cpu(),
+    #     beta=2.0,
+    #     cam_height_degree=20,
+    #     target_center_height=1.0,
+    # )
 
-    # -- rendering code -- #
-    video_path = cfg.video_path
-    length, width, height = get_video_lwh(video_path)
-    _, _, K = create_camera_sensor(width, height, 24)  # render as 24mm lens
+    # # Initialize the plot
+    # fig = plt.figure()
+    # ax = fig.add_subplot(111, projection='3d')
 
-    # renderer
-    renderer = Renderer(width, height, device="cuda", faces=faces_smpl, K=K)
-    # renderer = Renderer(width, height, device="cuda", faces=faces_smpl, K=K, bin_size=0)
+    # # Set axis limits (adjust based on your data)
+    # ax.set_xlim([-2, 2])
+    # ax.set_ylim([-2, 2])
+    # ax.set_zlim([-2, 2])
+    
+    # # Plot initialization
+    # scatter = ax.scatter([], [], [])
 
-    # -- render mesh -- #
-    scale, cx, cz = get_ground_params_from_points(joints_glob[:, 0], verts_glob)
-    renderer.set_ground(scale * 1.5, cx, cz)
-    color = torch.ones(3).float().cuda() * 0.8
+    # def update(frame):
+    #     """Update function for animation"""
+    #     positions = smpl_out.cpu().numpy()[frame]  # Shape: (n_joints, 3)
+    #     scatter._offsets3d = (positions[:, 0], positions[:, 1], positions[:, 2])
+    #     ax.set_title(f"Frame {frame + 1}/{smpl_out.shape[0]}")
+    #     return scatter
+    
+    # ani = FuncAnimation(fig, update, frames=smpl_out.shape[0], interval=50, blit=False)
 
-    render_length = length if not debug_cam else 8
-    writer = get_writer(global_video_path, fps=30, crf=CRF)
-    for i in tqdm(range(render_length), desc=f"Rendering Global"):
-        cameras = renderer.create_camera(global_R[i], global_T[i])
-        img = renderer.render_with_ground(verts_glob[[i]], color[None], cameras, global_lights)
-        writer.write_frame(img)
-    writer.close()
+    # # Save to a video file
+    # writer = FFMpegWriter(fps=20, metadata={'title': '3D Joint Animation'})
+    # ani.save("/home/fftai/RL/GVHMR/outputs/demo/result/3d_joints_animation_cv2.mp4", writer=writer)
+
+    # plt.show()
+
+    # # -- rendering code -- #
+    # video_path = cfg.video_path
+    # length, width, height = get_video_lwh(video_path)
+    # _, _, K = create_camera_sensor(width, height, 24)  # render as 24mm lens
+
+    # # renderer
+    # renderer = Renderer(width, height, device="cuda", faces=faces_smpl, K=K)
+    # # renderer = Renderer(width, height, device="cuda", faces=faces_smpl, K=K, bin_size=0)
+
+    # # -- render mesh -- #
+    # scale, cx, cz = get_ground_params_from_points(joints_glob[:, 0], verts_glob)
+    # renderer.set_ground(scale * 1.5, cx, cz)
+    # color = torch.ones(3).float().cuda() * 0.8
+
+    # render_length = length if not debug_cam else 8
+    # writer = get_writer(global_video_path, fps=30, crf=CRF)
+    # for i in tqdm(range(render_length), desc=f"Rendering Global"):
+    #     cameras = renderer.create_camera(global_R[i], global_T[i])
+    #     img = renderer.render_with_ground(verts_glob[[i]], color[None], cameras, global_lights)
+    #     writer.write_frame(img)
+    # writer.close()
 
 
 if __name__ == "__main__":
@@ -327,8 +363,8 @@ if __name__ == "__main__":
         torch.save(pred, paths.hmr4d_results)
 
     # ===== Render ===== #
-    render_incam(cfg)
+    # render_incam(cfg)
     render_global(cfg)
-    if not Path(paths.incam_global_horiz_video).exists():
-        Log.info("[Merge Videos]")
-        merge_videos_horizontal([paths.incam_video, paths.global_video], paths.incam_global_horiz_video)
+    # if not Path(paths.incam_global_horiz_video).exists():
+    #     Log.info("[Merge Videos]")
+    #     merge_videos_horizontal([paths.incam_video, paths.global_video], paths.incam_global_horiz_video)
